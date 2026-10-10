@@ -1,1 +1,74 @@
+name: Upload ZIP - Build STM32 Firmware
 
+on:
+  push:
+    paths:
+      - "STM32_Firmware.zip"
+      - ".github/workflows/auto_zip_compile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Initialize Arduino CLI
+        run: arduino-cli config init
+
+      - name: Add STM32duino board index
+        run: |
+          arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
+          arduino-cli core update-index
+
+      - name: Install STM32 core and required libraries
+        run: |
+          arduino-cli core install STMicroelectronics:stm32
+          arduino-cli lib update-index
+          arduino-cli lib install "LiquidCrystal I2C"
+
+      - name: Extract firmware ZIP
+        run: |
+          mkdir -p firmware
+          unzip -q STM32_Firmware.zip -d firmware
+
+      - name: Run firmware host regression tests
+        run: |
+          chmod +x firmware/tests/run_tests.sh
+          firmware/tests/run_tests.sh
+
+      - name: Locate Arduino sketch
+        id: sketch
+        shell: bash
+        run: |
+          sketch="$(find firmware -type f -name '*.ino' -print -quit)"
+          if [ -z "$sketch" ]; then
+            echo "ERROR: No .ino sketch found in STM32_Firmware.zip"
+            exit 1
+          fi
+          sketch_dir="$(dirname "$sketch")"
+          echo "sketch_dir=$sketch_dir" >> "$GITHUB_OUTPUT"
+          echo "Found sketch: $sketch"
+
+      - name: Compile for STM32F103C8T6 Blue Pill
+        run: |
+          mkdir -p build-output
+          arduino-cli compile --verbose --fqbn STMicroelectronics:stm32:GenF1:pnum=BLUEPILL_F103C8 --output-dir build-output "${{ steps.sketch.outputs.sketch_dir }}"
+
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: STM32-Zipper-Firmware-Build
+          path: |
+            build-output/**/*.bin
+            build-output/**/*.hex
+            build-output/**/*.elf
+          if-no-files-found: warn
